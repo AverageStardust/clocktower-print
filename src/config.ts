@@ -1,6 +1,8 @@
 // @deno-types="https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.d.ts"
 import Fuse from 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.mjs';
-import * as path from "jsr:@std/path";
+import * as path from "https://deno.land/std@0.224.0/path/mod.ts";
+import { mimelite } from "https://deno.land/x/mimetypes@v1.0.0/mod.ts"
+
 import { printError, printWarning } from './logging.ts';
 
 enum TokenType {
@@ -31,36 +33,39 @@ export interface Script<T> {
 export interface Token {
     name: string;
     isOffical: boolean;
-    characterImage: ImageBitmap;
-    reminderImages: ImageBitmap[];
+    characterImagePath: string;
+    reminderImagePaths: string[];
     characterCount: number;
-    reminderCount: number;
+    reminderCounts: number[];
 }
 
 interface ImageEntry {
+    filepath: string;
     filename: string;
-    searchName: string;
+    searchString: string;
+    isOffical: boolean | null;
 }
 
 type ScriptSkeleton = Script<Partial<Token> & {
     name: string,
     isOffical: boolean
 }>;
-type ScriptSkeletonWithImages = Script<Partial<Token> & {
+type ScriptSkeletonWithPaths = Script<Partial<Token> & {
     name: string,
     isOffical: boolean,
-    characterImage: ImageBitmap,
-    reminderImages: ImageBitmap[];
+    characterImagePath: string,
+    reminderImagePaths: string[],
+    characterImageMime: string,
+    reminderImageMimes: string[]
 }>;
 
-const imageFileTypes = [".png"];
 const fuseConfirmWithUserThreshold = 0.2;
 const fuseOptions = {
     isCaseSensitive: false,
     includeScore: true,
     threshold: 0.45,
     keys: [
-        "searchName",
+        "searchString",
     ]
 };
 
@@ -86,50 +91,36 @@ export async function promptConfig(): Promise<Config> {
     return config as Config;
 }
 
-async function promptScript() {
-    // repeat prompt until something is entered
-    let filePath;
-    do {
-        filePath = prompt("Where is the script file:", "testScripts/Labyrinth.json");
-    } while (filePath === null);
+async function promptScript(): Promise<Script<Token>> {
+    let skeleton = undefined;
+    while (skeleton === undefined) {
+        const filePath = prompt("Where is the script file:");
 
-    // parse script
-    let script: ScriptSkeleton;
-    try {
-        const bytes = await Deno.readFile(filePath);
-        const text = decoder.decode(bytes);
-        const json = JSON.parse(text);
-        script = parseScript(json);
-    } catch (err) {
-        // error and try again
-        printError(String(err));
+        // repeat prompt until something is entered
+        if (filePath === null) continue;
+
+        // parse script
+        try {
+            const bytes = await Deno.readFile(filePath);
+            const text = decoder.decode(bytes);
+            const json = JSON.parse(text);
+            skeleton = parseScriptSkeleton(json);
+        } catch (err) {
+            // error and try again
+            printError(String(err));
+        }
+
         console.log(""); // add new line
-        return promptScript();
     }
 
-    console.log(""); // add new line
 
-    // add token images
-    await addScriptImages(script, TokenType.Character, "Where are the character images:", "testCharacters");
-    await addScriptImages(script, TokenType.Reminder, "Where are the reminder images:", "testReminders");
+    const skeletonWithPaths = addScriptImagePaths(skeleton);
+    const script = addScriptCounts(skeletonWithPaths);
 
-    // print summary
-    try {
-        printSummary(script as ScriptSkeletonWithImages);
-    } catch (err) {
-        // error and try again
-        printError(String(err));
-        console.log(""); // add new line
-        return promptScript();
-    }
-
-    // add token counts
-    promptScriptCounts(script);
-
-    return script as Script<Token>;
+    return script;
 }
 
-function parseScript(obj: unknown): ScriptSkeleton {
+function parseScriptSkeleton(obj: unknown): ScriptSkeleton {
     const script: Partial<Script<Partial<Token>>> = {};
     script.tokens = [];
 
@@ -192,111 +183,115 @@ function checkIfMagicString(str: string) {
     return false;
 }
 
-async function addScriptImages(script: ScriptSkeleton, tokenType: TokenType, message?: string, _default?: string) {
-    // repeat prompt until something is entered
-    let folderPath;
-    do {
-        folderPath = prompt(message, _default);
-    } while (folderPath === null);
-    console.log(""); // add new line
+function addScriptImagePaths(script: ScriptSkeleton): ScriptSkeletonWithPaths {
+    addScriptImagePathsForType(script, TokenType.Character);
+    addScriptImagePathsForType(script, TokenType.Reminder);
+    return script as ScriptSkeletonWithPaths;
+}
 
-    const officalEntries: ImageEntry[] = [];
-    const unofficalEntries: ImageEntry[] = [];
-    const unknownEntries: ImageEntry[] = [];
+function addScriptImagePathsForType(script: ScriptSkeleton, tokenType: TokenType) {
+    const imageEntries = promptImageEntriesFromDir(`Where are the ${tokenType} images:`);
 
-    // search for files in folder
-    try {
-        for await (const dirEntry of Deno.readDir(folderPath)) {
-            if (!dirEntry.isFile) continue;
+    const fuseOffical = new Fuse(imageEntries.filter(
+        ({ isOffical }) => isOffical !== false), // filter to get only official and unknown status
+        fuseOptions);
 
-            const searchName = dirEntry.name.split(".")[0].split("_")[0];
-            const fileType = path.extname(dirEntry.name);
-            const isImage = imageFileTypes.includes(fileType.toLowerCase());
-
-            if (!isImage) continue;
-
-            const entry: ImageEntry = {
-                filename: dirEntry.name,
-                searchName
-            };
-            if (name.toLowerCase().includes("unofficial")) {
-                unofficalEntries.push(entry);
-            } else if (name.toLowerCase().includes("official")) {
-                officalEntries.push(entry);
-            } else {
-                unknownEntries.push(entry);
-            }
-        }
-    } catch (err) {
-        // error and try again
-        printError(String(err));
-        console.log(""); // add new line
-        return await addScriptImages(script, tokenType, message, _default);
-    }
-
-    if (unknownEntries.length > 0) {
-        // only warn if some things are labeled, if nothing is labeled we will just suffer
-        if (officalEntries.length > 0 || unofficalEntries.length > 0)
-            console.warn(`Some ${tokenType} images have not been labels official/unoffical`);
-
-        officalEntries.push(...unknownEntries);
-        unofficalEntries.push(...unknownEntries);
-    }
-
-    const officalFuse = new Fuse(officalEntries, fuseOptions);
-    const unofficalFuse = new Fuse(unofficalEntries, fuseOptions);
+    const fuseUnoffical = new Fuse(imageEntries.filter(
+        ({ isOffical }) => isOffical !== true), // filter to get only unofficial and unknown status
+        fuseOptions);
 
     for (const token of script.tokens) {
-        const fuse = token.isOffical ? officalFuse : unofficalFuse;
+        const fuse = token.isOffical ? fuseOffical : fuseUnoffical;
 
         let entries: ImageEntry[];
         switch (tokenType) {
             case TokenType.Character:
-                entries = [searchForCharacterImage(fuse, token.name)];
+                entries = searchForImages(fuse, token.name, 1, 1, 4);
                 break;
             case TokenType.Reminder:
-                entries = searchForReminderImages(fuse, token.name);
+                entries = searchForImages(fuse, token.name, 0, 8, 8);
                 break;
         }
 
-        const filePaths = entries.map(entry => path.join(folderPath, entry.filename));
-        const images = await Promise.all(filePaths.map(loadImage));
+        const imagePaths = entries.map(({ filepath }) => filepath);
 
         switch (tokenType) {
             case TokenType.Character:
-                token.characterImage = images[0];
+                token.characterImagePath = imagePaths[0];
                 break;
             case TokenType.Reminder:
-                token.reminderImages = images;
+                token.reminderImagePaths = imagePaths;
                 break;
         }
     }
 }
 
-function searchForCharacterImage(fuse: Fuse<ImageEntry>, tokenName: string): ImageEntry {
-    const searchResults = fuse.search(tokenName, { limit: 5 });
+function promptImageEntriesFromDir(message?: string, _default?: string) {
+    const imageEntries: ImageEntry[] = [];
 
-    for (let i = 0; i < searchResults.length; i++) {
-        const result = searchResults[i];
+    let folderPath = null, dirEntries = undefined;
+    while (dirEntries === undefined || folderPath === null) {
+        try {
+            // repeat prompt until something is entered
+            folderPath = prompt(message, _default);
+            if (folderPath === null) continue;
 
-        // check if result needs to be confirmed by the user
-        if ((result.score ?? 0) < fuseConfirmWithUserThreshold) {
-            return result.item; // safe match
-        } else {
-            // confirm with user on dubious matches
-            if (confirm(`Does "${tokenName}" match "${result.item.filename}":`)) {
-                console.log(""); // add new line
-                return result.item;
-            }
+            dirEntries = Deno.readDirSync(folderPath);
+        } catch (err) {
+            // error and try again
+            printError(String(err));
         }
+        console.log(""); // add new line
     }
 
-    throw Error(`Can't find character image for "${tokenName}"`);
+    for (const dirEntry of dirEntries) {
+        const imageEntry = parseImageEntryFromDir(dirEntry, folderPath);
+        if (imageEntry !== null)
+            imageEntries.push(imageEntry);
+    }
 
+    return imageEntries;
 }
 
-function searchForReminderImages(fuse: Fuse<ImageEntry>, tokenName: string): ImageEntry[] {
-    const searchResults = fuse.search(tokenName, { limit: 8 });
+function parseImageEntryFromDir(dirEntry: Deno.DirEntry, folderPath: string): ImageEntry | null {
+    if (!dirEntry.isFile) return null;
+
+    const mimeType = mimelite.getType(dirEntry.name);
+    if (mimeType === undefined || mimeType!.startsWith("image/")) return null;
+
+    let searchString = dirEntry.name;
+
+    // remove file extensions
+    const searchStringParts = searchString.split(".");
+    if (searchStringParts.length > 1) searchStringParts.pop(); // remove file extension
+    searchString = searchStringParts.join(".");
+
+    // try to remove all but first phrase
+    if (searchString.includes("_")) {
+        // select first phrase by seperating underscores underscores
+        searchString = searchString.split("_")[0];
+    }
+
+    // remove spaces
+    searchString = searchString.replaceAll(" ", "");
+
+    let isOffical = null;
+    if (name.toLowerCase().includes("unofficial")) {
+        isOffical = false;
+    } else if (name.toLowerCase().includes("official")) {
+        isOffical = true
+    }
+
+    return {
+        filepath: path.resolve(folderPath, dirEntry.name),
+        filename: dirEntry.name,
+        searchString,
+        isOffical
+    };
+}
+
+function searchForImages(fuse: Fuse<ImageEntry>, tokenName: string, minResults: number, maxResults: number, attemptedResults: number): ImageEntry[] {
+    const searchResults = fuse.search(tokenName, { limit: attemptedResults });
     const correctResults: ImageEntry[] = [];
 
     let printedMessages = false;
@@ -307,13 +302,20 @@ function searchForReminderImages(fuse: Fuse<ImageEntry>, tokenName: string): Ima
         // check if result needs to be confirmed by the user
         if ((result.score ?? 0) < fuseConfirmWithUserThreshold) {
             correctResults.push(result.item); // safe match
+
+            // we have hit the max number results, stop asking
+            if (correctResults.length >= maxResults) break;
         } else {
             // confirm with user on dubious matches
             printedMessages = true;
-            if (confirm(`Does "${tokenName}" match "${result.item.filename}":`)) {
+            if (confirm(`Does ${tokenName} match "${result.item.filename}":`)) {
                 correctResults.push(result.item);
+
+                // we have hit the max number results, stop asking
+                if (correctResults.length >= maxResults) break;
             } else {
-                break;
+                // we have enough results and the rest seem bad, stop asking
+                if (correctResults.length >= minResults) break;
             }
         }
     }
@@ -324,34 +326,17 @@ function searchForReminderImages(fuse: Fuse<ImageEntry>, tokenName: string): Ima
     return correctResults;
 }
 
-async function loadImage(path: string): Promise<ImageBitmap> {
-    const bytes = await Deno.readFile(path);
-    const blob = new Blob([bytes], { type: "image/png" });
-    return createImageBitmap(blob);
-}
-
-function printSummary(script: ScriptSkeletonWithImages) {
-    console.log(`### ${script.title} by ${script.author} ###`)
-
+function addScriptCounts(script: ScriptSkeletonWithPaths): Script<Token> {
     for (const token of script.tokens) {
-        if (token.reminderImages.length > 0) {
-            console.log(`${token.name} with ${token.reminderImages.length} reminder types(s)`);
-        } else {
-            console.log(`${token.name}`);
+        token.characterCount = promptPositiveInt(`${token.name} character tokens:`, 1);
+        token.reminderCounts = [];
+        for (const reminderPath of token.reminderImagePaths) {
+            const reminderFilename = path.basename(reminderPath);
+            token.reminderCounts.push(promptPositiveInt(`"${reminderFilename}" reminder tokens:`, 1));
         }
     }
 
-    console.log("");
-    if (!confirm("Is this correct?"))
-        throw Error("Summary is incorrect");
-    console.log("");
-}
-
-function promptScriptCounts(script: Script<Partial<Token>>) {
-    for (const token of script.tokens) {
-        token.characterCount = promptPositiveInt(`${token.name} character tokens:`, 1);
-        token.reminderCount = promptPositiveInt(`${token.name} reminders per type:`, 1);
-    }
+    return script as Script<Token>;
 }
 
 function promptPositiveInt(message?: string, _default?: number) {
