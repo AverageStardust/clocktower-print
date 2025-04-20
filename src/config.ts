@@ -63,7 +63,7 @@ const fuseConfirmWithUserThreshold = 0.2;
 const fuseOptions = {
     isCaseSensitive: false,
     includeScore: true,
-    threshold: 0.45,
+    threshold: 0.4,
     keys: [
         "searchString",
     ]
@@ -270,6 +270,15 @@ function parseImageEntryFromDir(dirEntry: Deno.DirEntry, folderPath: string): Im
     if (searchString.includes("_")) {
         // select first phrase by seperating underscores underscores
         searchString = searchString.split("_")[0];
+    } else {
+        const firstWord = searchString.split(" ")[0];
+        const firstWordAllCaps = firstWord === firstWord.toUpperCase();
+        const wholeStringAllCaps = searchString === searchString.toUpperCase();
+
+        if (firstWordAllCaps && !wholeStringAllCaps) {
+            // select first phrase by seperating all caps section
+            searchString = searchString.replace(/[A-Za-z][a-z].+/, "").trimEnd();
+        }
     }
 
     // remove spaces
