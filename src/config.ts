@@ -257,7 +257,7 @@ function parseImageEntryFromDir(dirEntry: Deno.DirEntry, folderPath: string): Im
     if (!dirEntry.isFile) return null;
 
     const mimeType = mimelite.getType(dirEntry.name);
-    if (mimeType === undefined || mimeType!.startsWith("image/")) return null;
+    if (mimeType === undefined || !mimeType.startsWith("image/")) return null;
 
     let searchString = dirEntry.name;
 
