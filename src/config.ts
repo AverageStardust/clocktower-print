@@ -105,7 +105,7 @@ export async function promptConfig(): Promise<Config> {
 async function promptScript(): Promise<Script<Token>> {
     let skeleton = undefined;
     while (skeleton === undefined) {
-        const filePath = prompt("Where is the script file:", "testScripts/Labyrinth.json");
+        const filePath = prompt("Where is the script file:");
 
         // repeat prompt until something is entered
         if (filePath === null) continue;
@@ -221,8 +221,7 @@ function addScriptImagePathsForTypeWithErrorHandling(script: ScriptSkeleton, tok
 }
 
 function addScriptImagePathsForType(script: ScriptSkeleton, tokenType: TokenType) {
-    const _default = `test${tokenType[0].toUpperCase()}${tokenType.slice(1)}s`;
-    const imageEntries = promptImageEntriesFromDir(`Where are the ${tokenType} images:`, _default);
+    const imageEntries = promptImageEntriesFromDir(`Where are the ${tokenType} images:`);
 
     const options = {
         isCaseSensitive: false,
