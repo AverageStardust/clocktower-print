@@ -16,6 +16,8 @@ export interface Config {
     scripts: Script<Token>[];
     totalCount: number;
 
+    cutWidth: number;
+
     characterPrintRadius: number;
     characterCutRadius: number;
 
@@ -87,6 +89,8 @@ export async function promptConfig(): Promise<Config> {
     // repeat prompt until something is entered
     while (config.title === undefined || config.title.length === 0)
         config.title = prompt("Output title:", "untitled") ?? undefined;
+
+    config.cutWidth = promptPositiveFloat("Cut width in mm:", 0.1);
 
     config.characterPrintRadius = 51.3 / 2;
     config.characterCutRadius = 45 / 2;
@@ -394,13 +398,13 @@ function addScriptCounts(script: ScriptSkeletonWithPaths): Script<Token> {
     let totalCount = 0;
 
     for (const token of script.tokens) {
-        token.characterCount = promptPositiveInt(`${token.name} character tokens:`, 1);
+        token.characterCount = promptPositiveOrZeroInt(`${token.name} character tokens:`, 1);
         totalCount += token.characterCount;
 
         token.reminderCounts = [];
         for (const reminderPath of token.reminderImagePaths) {
             const reminderFilename = path.basename(reminderPath);
-            const reminderCount = promptPositiveInt(`"${reminderFilename}" reminder tokens:`, 1);
+            const reminderCount = promptPositiveOrZeroInt(`"${reminderFilename}" reminder tokens:`, 1);
             token.reminderCounts.push(reminderCount);
             totalCount += reminderCount;
         }
@@ -413,7 +417,18 @@ function addScriptCounts(script: ScriptSkeletonWithPaths): Script<Token> {
     return script as Script<Token>;
 }
 
-function promptPositiveInt(message?: string, _default?: number) {
+function promptPositiveFloat(message?: string, _default?: number) {
+    // repeat prompt until something valid is entered
+    let number;
+    do {
+        number = Number(prompt(message, String(_default)))
+        if (number <= 0) continue;
+    } while (isNaN(number));
+
+    return number;
+}
+
+function promptPositiveOrZeroInt(message?: string, _default?: number) {
     // repeat prompt until something valid is entered
     let number;
     do {

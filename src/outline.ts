@@ -27,7 +27,7 @@ export class Outline {
         const contents = [];
 
         for (const { x, y, radius } of this.circles) {
-            contents.push(`<circle cx="${x}mm" cy="${y}mm" r="${radius}mm" fill="transparent" stroke="black" stroke-width=1px></circle>`)
+            contents.push(`<circle cx="${x}mm" cy="${y}mm" r="${radius}mm" fill="transparent" stroke="black" stroke-width="${this.config.cutWidth}mm"></circle>`)
         }
 
         return `<svg width="${this.config.pageWidth}mm" height="${this.config.pageHeight}mm">${contents.join("")}</svg>`;
