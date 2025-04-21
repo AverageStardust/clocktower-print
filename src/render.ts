@@ -1,12 +1,19 @@
 import { createCanvas, Image, EmulatedCanvas2D, EmulatedCanvas2DContext, loadImage } from "https://deno.land/x/canvas@v1.4.2/mod.ts";
 
 import { Config } from "./config.ts";
+import { Outline } from "./outline.ts";
 
-type HexRendererGenerator = Generator<EmulatedCanvas2D | null, EmulatedCanvas2D | null, TokenDraw | null>;
+type HexRendererGenerator = Generator<Page | null, Page | null, TokenDraw | null>;
 
 interface TokenDraw {
     image: Image;
     printRadius: number;
+    cutRadius: number;
+}
+
+interface Page {
+    canvas: EmulatedCanvas2D;
+    outline: Outline;
 }
 
 export class HexRenderer {
@@ -39,7 +46,7 @@ export class HexRenderer {
                     console.clear();
                     console.log(`Rendering... drawing ${script.title} charactors ${renderCount}/${config.totalCount}`);
 
-                    await this.addToken(characterImagePath, config.characterPrintRadius);
+                    await this.addToken(characterImagePath, config.characterPrintRadius, config.characterCutRadius);
                 }
             }
         }
@@ -56,7 +63,7 @@ export class HexRenderer {
                         console.clear();
                         console.log(`Rendering... drawing ${script.title} reminders ${renderCount}/${config.totalCount}`);
 
-                        await this.addToken(path, config.reminderPrintRadius);
+                        await this.addToken(path, config.reminderPrintRadius, config.reminderCutRadius);
                     }
                 }
             }
@@ -71,9 +78,9 @@ export class HexRenderer {
         this.fileTitle = config.title;
     }
 
-    async addToken(path: string, printRadius: number) {
+    async addToken(path: string, printRadius: number, cutRadius: number) {
         const image = await this.imageLoader.get(path, printRadius * 2, printRadius * 2);
-        const { value: page, done } = this.generator.next({ image, printRadius });
+        const { value: page, done } = this.generator.next({ image, printRadius, cutRadius });
 
         if (done)
             throw Error("Generator unexpectedly ended");
@@ -91,13 +98,20 @@ export class HexRenderer {
         this.generator = null;
     }
 
-    private async savePage(page: EmulatedCanvas2D | null) {
+    private async savePage(page: Page | null) {
         if (page === null) return;
+        const filename = `${this.fileTitle} page ${this.pageCount + 1}`;
+
+
 
         console.clear();
         console.log(`Rendering... saving page ${this.pageCount + 1}`);
+        await Deno.writeFile(`${filename}.png`, page.canvas.toBuffer());
 
-        await Deno.writeFile(`${this.fileTitle} page ${this.pageCount + 1}.png`, page.toBuffer());
+        console.clear();
+        console.log(`Rendering... saving outline ${this.pageCount + 1}`);
+        await Deno.writeTextFile(`${filename}.svg`, page.outline.toString());
+
         this.pageCount++;
     }
 
@@ -119,15 +133,20 @@ export class HexRenderer {
         let isRowOffset = false;
 
         // current page and context being drawn to
-        let page: EmulatedCanvas2D | null = null;
+        let canvas: EmulatedCanvas2D | null = null;
         let ctx: EmulatedCanvas2DContext | null = null;
+        let outline: Outline | null = null;
 
         // previous page that just finished drawing
-        let finishedPage: EmulatedCanvas2D | null = null;
+        let finishedCanvas: EmulatedCanvas2D | null = null;
+        let finishedOutline: Outline | null = null;
+
 
         while (tokenDraw !== null) {
             // move to next row if token radius changes
             const tokenRadius = tokenDraw.printRadius * pixelsPerMm;
+            const cutRadius = tokenDraw.cutRadius * pixelsPerMm;
+
             if (rowRadius !== tokenRadius) {
                 drawX = 0;
                 drawY += rowRadius * 2;
@@ -145,9 +164,11 @@ export class HexRenderer {
             // move to next page if we are past the bottom edge of the page
             if (drawY + tokenRadius * 2 > pageHeight) {
                 // flip page
-                finishedPage = page;
-                page = null;
+                finishedCanvas = canvas;
+                finishedOutline = outline;
+                canvas = null;
                 ctx = null;
+                outline = null;
 
                 // reset drawing
                 drawX = 0;
@@ -156,29 +177,43 @@ export class HexRenderer {
             }
 
             // do we need to make a new page?
-            if (page === null || ctx === null) {
-                page = createCanvas(pageWidth, pageHeight);
-                if (page === null)
+            if (canvas === null || ctx === null || outline === null) {
+                // create canvas
+                canvas = createCanvas(pageWidth, pageHeight);
+                if (canvas === null)
                     throw Error("Failed to make canvas");
-                ctx = page.getContext("2d");
+                ctx = canvas.getContext("2d");
 
+                // create outline
+                outline = new Outline(config);
+
+                // fill canvas background
                 ctx.fillStyle = "white";
                 ctx.fillRect(0, 0, pageWidth, pageHeight);
             }
 
             // draw token
             ctx.drawImage(tokenDraw.image, drawX, drawY, tokenRadius * 2, tokenRadius * 2);
+            outline.addCircle(drawX + tokenRadius, drawY + tokenRadius, cutRadius);
 
             // move to next token location
             drawX += tokenRadius * 2;
 
-            // yeild finished page, assuming it's not null, and get next token
-            tokenDraw = yield finishedPage;
-            finishedPage = null;
+            // yeild page if finished and get next token
+            if (finishedCanvas !== null && finishedOutline !== null) {
+                tokenDraw = yield { canvas: finishedCanvas, outline: finishedOutline };
+            } else {
+                tokenDraw = yield null;
+            }
+            finishedCanvas = null;
         }
 
-        // return partial page, assuming it's not null
-        return page;
+        if (canvas !== null && outline !== null) {
+            // return partial page
+            return { canvas, outline };
+        } else {
+            return null;
+        }
     }
 }
 
