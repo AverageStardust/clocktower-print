@@ -1,9 +1,12 @@
 import { promptConfig } from "./config.ts";
-import "./render.ts";
+import { HexRenderer } from "./render.ts";
 
 async function main() {
-    const config = promptConfig();
-    console.log(await config);
+    console.log("Clocktower Print v0.1\n");
+
+    const config = await promptConfig();
+    const renderer = new HexRenderer();
+    renderer.renderConfig(config);
 }
 
 main();
