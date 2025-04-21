@@ -28,6 +28,7 @@ export interface Script<T> {
     title: string;
     author: string;
     tokens: T[];
+    totalCount: number;
 }
 
 export interface Token {
@@ -54,20 +55,12 @@ type ScriptSkeletonWithPaths = Script<Partial<Token> & {
     name: string,
     isOffical: boolean,
     characterImagePath: string,
-    reminderImagePaths: string[],
-    characterImageMime: string,
-    reminderImageMimes: string[]
+    reminderImagePaths: string[]
 }>;
 
 const fuseConfirmWithUserThreshold = 0.2;
-const fuseOptions = {
-    isCaseSensitive: false,
-    includeScore: true,
-    threshold: 0.4,
-    keys: [
-        "searchString",
-    ]
-};
+const fuseIgnoreThreshold = 0.4;
+const fureDifferentLengthBias = 0.04;
 
 const decoder = new TextDecoder();
 
@@ -77,11 +70,11 @@ export async function promptConfig(): Promise<Config> {
 
     config.script = await promptScript();
 
-    config.characterPrintRadius = 51.3;
-    config.characterCutRadius = 45;
+    config.characterPrintRadius = 51.3 / 2;
+    config.characterCutRadius = 45 / 2;
 
-    config.reminderPrintRadius = 28;
-    config.reminderCutRadius = 25;
+    config.reminderPrintRadius = 28 / 2;
+    config.reminderCutRadius = 25 / 2;
 
     config.pageWidth = 210; // A4 width
     config.pageHeight = 279.4; // Letter paper height
@@ -143,8 +136,6 @@ function parseScriptSkeleton(obj: unknown): ScriptSkeleton {
         if (typeof id !== "string")
             throw Error("Invalid script: id is not a string");
 
-        script.author = "unknown";
-        script.title = "untitled";
         switch (id) {
             case "_meta":
                 // parse meta tag
@@ -171,6 +162,17 @@ function parseScriptSkeleton(obj: unknown): ScriptSkeleton {
     if (script.tokens.length <= 0)
         printWarning("Warning: Zero tokens found in script");
 
+    // repeat prompt until something is entered
+    while (script.author === undefined)
+        script.author = prompt("Script author:", "unknown") ?? undefined;
+
+    // repeat prompt until something is entered
+    while (script.title === undefined)
+        script.title = prompt("Script title:", "untitled") ?? undefined;
+
+    script.author = script.author.trim();
+    script.title = script.title.trim();
+
     return script as ScriptSkeleton;
 }
 
@@ -192,13 +194,22 @@ function addScriptImagePaths(script: ScriptSkeleton): ScriptSkeletonWithPaths {
 function addScriptImagePathsForType(script: ScriptSkeleton, tokenType: TokenType) {
     const imageEntries = promptImageEntriesFromDir(`Where are the ${tokenType} images:`);
 
+    const options = {
+        isCaseSensitive: false,
+        includeScore: true,
+        threshold: fuseIgnoreThreshold,
+        keys: [
+            "searchString",
+        ]
+    };;
+
     const fuseOffical = new Fuse(imageEntries.filter(
         ({ isOffical }) => isOffical !== false), // filter to get only official and unknown status
-        fuseOptions);
+        options);
 
     const fuseUnoffical = new Fuse(imageEntries.filter(
         ({ isOffical }) => isOffical !== true), // filter to get only unofficial and unknown status
-        fuseOptions);
+        options);
 
     for (const token of script.tokens) {
         const fuse = token.isOffical ? fuseOffical : fuseUnoffical;
@@ -220,7 +231,7 @@ function addScriptImagePathsForType(script: ScriptSkeleton, tokenType: TokenType
                 token.characterImagePath = imagePaths[0];
                 break;
             case TokenType.Reminder:
-                token.reminderImagePaths = imagePaths;
+                token.reminderImagePaths = imagePaths.sort();
                 break;
         }
     }
@@ -300,25 +311,37 @@ function parseImageEntryFromDir(dirEntry: Deno.DirEntry, folderPath: string): Im
 }
 
 function searchForImages(fuse: Fuse<ImageEntry>, tokenName: string, minResults: number, maxResults: number, attemptedResults: number): ImageEntry[] {
-    const searchResults = fuse.search(tokenName, { limit: attemptedResults });
+    let searchResults = fuse.search(tokenName, { limit: attemptedResults }) as {
+        item: ImageEntry
+        score: number
+    }[];
     const correctResults: ImageEntry[] = [];
 
     let printedMessages = false;
 
-    for (let i = 0; i < searchResults.length; i++) {
-        const result = searchResults[i];
+    // ajust scores for string length differance
+    for (const result of searchResults) {
+        const lengthDifferance = Math.abs(result.item.searchString.length - tokenName.length);
+        result.score = result.score + lengthDifferance * fureDifferentLengthBias;
+    }
+
+    searchResults = searchResults
+        .sort((result) => result.score)
+        .filter((result) => result.score <= fuseIgnoreThreshold);
+
+    for (const { item, score } of searchResults) {
 
         // check if result needs to be confirmed by the user
-        if ((result.score ?? 0) < fuseConfirmWithUserThreshold) {
-            correctResults.push(result.item); // safe match
+        if (score < fuseConfirmWithUserThreshold) {
+            correctResults.push(item); // safe match
 
             // we have hit the max number results, stop asking
             if (correctResults.length >= maxResults) break;
         } else {
             // confirm with user on dubious matches
             printedMessages = true;
-            if (confirm(`Does ${tokenName} match "${result.item.filename}":`)) {
-                correctResults.push(result.item);
+            if (confirm(`Does "${tokenName}" match "${item.filename}":`)) {
+                correctResults.push(item);
 
                 // we have hit the max number results, stop asking
                 if (correctResults.length >= maxResults) break;
@@ -336,12 +359,18 @@ function searchForImages(fuse: Fuse<ImageEntry>, tokenName: string, minResults: 
 }
 
 function addScriptCounts(script: ScriptSkeletonWithPaths): Script<Token> {
+    let totalCount = 0;
+
     for (const token of script.tokens) {
         token.characterCount = promptPositiveInt(`${token.name} character tokens:`, 1);
+        totalCount += token.characterCount;
+
         token.reminderCounts = [];
         for (const reminderPath of token.reminderImagePaths) {
             const reminderFilename = path.basename(reminderPath);
-            token.reminderCounts.push(promptPositiveInt(`"${reminderFilename}" reminder tokens:`, 1));
+            const reminderCount = promptPositiveInt(`"${reminderFilename}" reminder tokens:`, 1);
+            token.reminderCounts.push(reminderCount);
+            totalCount += reminderCount;
         }
     }
 
