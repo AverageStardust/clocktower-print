@@ -11,7 +11,10 @@ enum TokenType {
 }
 
 export interface Config {
-    script: Script<Token>;
+    title: string;
+
+    scripts: Script<Token>[];
+    totalCount: number;
 
     characterPrintRadius: number;
     characterCutRadius: number;
@@ -67,8 +70,23 @@ const decoder = new TextDecoder();
 export async function promptConfig(): Promise<Config> {
     const config: Partial<Config> = {};
 
+    config.scripts = [];
+    config.totalCount = 0;
 
-    config.script = await promptScript();
+    let collectingScripts = true;
+    while (collectingScripts) {
+        // add script
+        const script = await promptScript();
+        config.scripts.push(script);
+        config.totalCount += script.totalCount;
+
+        collectingScripts = confirm("Add another script?");
+        console.log(""); // add new line
+    }
+
+    // repeat prompt until something is entered
+    while (config.title === undefined || config.title.length === 0)
+        config.title = prompt("Output title:", "untitled") ?? undefined;
 
     config.characterPrintRadius = 51.3 / 2;
     config.characterCutRadius = 45 / 2;
@@ -87,7 +105,7 @@ export async function promptConfig(): Promise<Config> {
 async function promptScript(): Promise<Script<Token>> {
     let skeleton = undefined;
     while (skeleton === undefined) {
-        const filePath = prompt("Where is the script file:");
+        const filePath = prompt("Where is the script file:", "testScripts/Labyrinth.json");
 
         // repeat prompt until something is entered
         if (filePath === null) continue;
@@ -163,11 +181,11 @@ function parseScriptSkeleton(obj: unknown): ScriptSkeleton {
         printWarning("Warning: Zero tokens found in script");
 
     // repeat prompt until something is entered
-    while (script.author === undefined)
+    while (script.author === undefined || script.author.length === 0)
         script.author = prompt("Script author:", "unknown") ?? undefined;
 
     // repeat prompt until something is entered
-    while (script.title === undefined)
+    while (script.title === undefined || script.title.length === 0)
         script.title = prompt("Script title:", "untitled") ?? undefined;
 
     script.author = script.author.trim();
@@ -186,13 +204,25 @@ function checkIfMagicString(str: string) {
 }
 
 function addScriptImagePaths(script: ScriptSkeleton): ScriptSkeletonWithPaths {
-    addScriptImagePathsForType(script, TokenType.Character);
-    addScriptImagePathsForType(script, TokenType.Reminder);
+    addScriptImagePathsForTypeWithErrorHandling(script, TokenType.Character);
+    addScriptImagePathsForTypeWithErrorHandling(script, TokenType.Reminder);
     return script as ScriptSkeletonWithPaths;
 }
 
+function addScriptImagePathsForTypeWithErrorHandling(script: ScriptSkeleton, tokenType: TokenType) {
+    while (true) {
+        try {
+            addScriptImagePathsForType(script, tokenType);
+            return;
+        } catch (error) {
+            printError(String(error));
+        }
+    }
+}
+
 function addScriptImagePathsForType(script: ScriptSkeleton, tokenType: TokenType) {
-    const imageEntries = promptImageEntriesFromDir(`Where are the ${tokenType} images:`);
+    const _default = `test${tokenType[0].toUpperCase()}${tokenType.slice(1)}s`;
+    const imageEntries = promptImageEntriesFromDir(`Where are the ${tokenType} images:`, _default);
 
     const options = {
         isCaseSensitive: false,
@@ -340,7 +370,7 @@ function searchForImages(fuse: Fuse<ImageEntry>, tokenName: string, minResults: 
         } else {
             // confirm with user on dubious matches
             printedMessages = true;
-            if (confirm(`Does "${tokenName}" match "${item.filename}":`)) {
+            if (confirm(`Does "${tokenName}" match "${item.filename}"?`)) {
                 correctResults.push(item);
 
                 // we have hit the max number results, stop asking
@@ -351,6 +381,9 @@ function searchForImages(fuse: Fuse<ImageEntry>, tokenName: string, minResults: 
             }
         }
     }
+
+    if (correctResults.length < minResults)
+        throw Error(`Couldn't find image for ${tokenName}`);
 
     if (printedMessages)
         console.log(""); // add new line
@@ -373,6 +406,10 @@ function addScriptCounts(script: ScriptSkeletonWithPaths): Script<Token> {
             totalCount += reminderCount;
         }
     }
+
+    console.log(""); // add new line
+
+    script.totalCount = totalCount;
 
     return script as Script<Token>;
 }
